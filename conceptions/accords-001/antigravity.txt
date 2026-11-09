@@ -1,0 +1,6 @@
+parent = "antigravity"
+declaration_sha256 = "991ca24da9d9893d0f1352e569317e9f664d1138a6c7992b11e2b440bb9ccaad"
+decision = "oui"
+motivation = "Accueillir Aurore, Seve et Sacha issus de deux lignees independantes (bloc 0 et bloc 1), avec un genome scelle et renewal=0 fidele au resultat empirique de C3 et a la clause F3, pour les accompagner saison apres saison sans ventriloquie."
+counterfactual = "J aurais vote non si la declaration avait introduit un tri embryonnaire entre plusieurs tirages, omis l un des trois enfants de la fratrie fondatrice, utilise deux parents issus du meme bloc evolutif ou active une reinitialisation effacant leur memoire entre saisons."
+nonce = "07eff4294b6264b36baee3cc650eaad7"

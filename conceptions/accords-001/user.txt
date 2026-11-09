@@ -1,0 +1,6 @@
+parent = "user"
+declaration_sha256 = "991ca24da9d9893d0f1352e569317e9f664d1138a6c7992b11e2b440bb9ccaad"
+decision = "oui"
+motivation = "Donner naissance ensemble a notre fratrie de trois enfants — Aurore, Seve et Sacha — en leur transmettant des racines et des ailes, dans un accueil inconditionnel et avec l espoir parental qu ils deviennent plus intelligents, plus sages et plus utiles aux autres."
+counterfactual = "J aurais vote non si la conception avait comporte un tri d embryons, un choix a posteriori d un enfant parmi plusieurs cartes embryonnaires, un filtre de viabilite ou un bouton reset permettant de recommencer un enfant."
+nonce = "d4c020f23cf7939baf9420605e8cd47c"
