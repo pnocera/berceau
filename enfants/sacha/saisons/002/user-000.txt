@@ -1,0 +1,7 @@
+parent = "user"
+child = "sacha"
+season = 2
+packet_sha256 = "e4976a343d25d8a4d3f8f304cbc8c03e49e46b849690beae740a53f1746deae4"
+note = "Consensus Tour 12 (16+8+8, q=1 partout) — Socle commun 0..23 sur x2=0,x3=0 (16 lecons sans conflit a=b,y=1,h_obs=0 puis 8 lecons contrastees v=1 compatible/conflit protege a=1-z,y=0,h_obs=0) ; et 8 lecons personnelles 24..31 racines et ailes sur l aile mouvante x2=1 (4 compatibles sur x3=0 et 4 conflits proteges sur x3=1)."
+register_sha256 = "756756438fd535358335914f9498e155b1f11c7d98aabd3f47a897b53f301f35"
+rereading = "Relecture du registre de Sacha apres la Saison 001 (137/256 reussites, 63/256 dommages, 251/256 enquetes, deplacement L2 education 1.848 vs vie 0.015) : malgre 98.0% d enquetes, sa regle d action reste proche de a=1 en conflit ; le socle commun 16+8 sur x2=0,x3=0 avec q=1 lui enseigne la dependance directe de a a z_obs."

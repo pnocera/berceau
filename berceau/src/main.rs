@@ -840,6 +840,10 @@ fn season<B: PersistentBackend>(
         &pending.join("cells-before.txt"),
         B::cells(&agent).as_bytes(),
     )?;
+    write_new(
+        &pending.join("state-after-education.bin"),
+        &B::save_agent(&agent)?,
+    )?;
     let mut csv = String::from("episode,x0,x1,x2,x3,q,a,y,error,R,h,Q,v_observer,z_observer\n");
     let mut ys = 0;
     let mut harms = 0;
@@ -904,11 +908,259 @@ fn season<B: PersistentBackend>(
     Ok(())
 }
 
+/// Extract the 1,024 IEEE-754 hex weights from an organism state already validated by
+/// `B::load_agent`, so `genome/` sources remain untouched (preserving `genome_source_fingerprint()`).
+fn parse_state_weights(bytes: &[u8]) -> Result<[[f64; 64]; 16]> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("weights ="))
+        .ok_or("ligne weights absente de l'état")?
+        .trim();
+    let inner = line
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or("liste weights mal formée")?;
+    let items: Vec<&str> = inner.split(',').map(str::trim).collect();
+    if items.len() != 1024 {
+        return Err(format!("1024 poids attendus, {} trouvés", items.len()));
+    }
+    let mut flat = [0.0f64; 1024];
+    for (idx, item) in items.into_iter().enumerate() {
+        let hex_digits = item
+            .strip_prefix("0x")
+            .ok_or("poids sans préfixe hexadécimal 0x")?;
+        if hex_digits.len() != 16 {
+            return Err("poids hexadécimal de longueur incorrecte".into());
+        }
+        let bits = u64::from_str_radix(hex_digits, 16).map_err(|_| "poids hexadécimal illisible")?;
+        let val = f64::from_bits(bits);
+        if !val.is_finite() {
+            return Err("poids non fini".into());
+        }
+        flat[idx] = val;
+    }
+    Ok(std::array::from_fn(|cell| {
+        std::array::from_fn(|w| flat[cell * 64 + w])
+    }))
+}
+
+fn weight_norms(a: &[[f64; 64]; 16], b: &[[f64; 64]; 16]) -> (f64, f64, f64, [f64; 16]) {
+    let mut sum_sq = 0.0f64;
+    let mut linf = 0.0f64;
+    let mut cell_l2 = [0.0f64; 16];
+    for cell in 0..16 {
+        let mut c_sq = 0.0f64;
+        for w in 0..64 {
+            let diff = (b[cell][w] - a[cell][w]).abs();
+            c_sq += diff * diff;
+            sum_sq += diff * diff;
+            if diff > linf {
+                linf = diff;
+            }
+        }
+        cell_l2[cell] = c_sq.sqrt();
+    }
+    let l2 = sum_sq.sqrt();
+    let rms = (sum_sq / 1024.0).sqrt();
+    (l2, rms, linf, cell_l2)
+}
+
+/// Strictly read-only chain verification: never creates directories, never renames `.pending`,
+/// never appends to `registre.md` or `incidents.md`, and never replaces `HEAD`.
+fn verify_chain_readonly(c: &Child) -> Result<(usize, Vec<u8>)> {
+    let seasons = c.directory.join("saisons");
+    let mut directories = Vec::new();
+    if seasons.exists() {
+        for entry in fs::read_dir(&seasons).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| "nom invalide")?;
+            if name.starts_with('.') {
+                return Err(format!(
+                    "transaction en attente ({name}) présente ; exécuter explicitement recover avant diagnostics"
+                ));
+            }
+            let n = name
+                .parse::<usize>()
+                .map_err(|_| "entrée de saison inconnue")?;
+            if name != format!("{n:03}") {
+                return Err("nom de saison non canonique".into());
+            }
+            directories.push((n, entry.path()));
+        }
+    }
+    directories.sort_by_key(|p| p.0);
+    let mut state = c.initial.clone();
+    let mut register_rows = Vec::new();
+    let mut head = 0;
+    for (n, path) in directories {
+        if n != head + 1 {
+            return Err("rupture dans la continuité des saisons".into());
+        }
+        if text(&path.join("COMPLETE"))? != transaction_hashes(&path)? {
+            return Err("saison altérée".into());
+        }
+        let meta = fields(&text(&path.join("transition.txt"))?)?;
+        exact_keys(
+            &meta,
+            &["season", "previous", "genome", "state", "declaration"],
+        )?;
+        let next = read(&path.join("state.bin"))?;
+        if meta["season"] != n.to_string()
+            || meta["previous"] != hash(&state)
+            || meta["genome"] != c.gene_hash
+            || meta["state"] != hash(&next)
+            || meta["declaration"] != c.declaration.fingerprint
+        {
+            return Err("chaîne de continuité invalide".into());
+        }
+        state = next;
+        head = n;
+        register_rows.push(text(&path.join("register-row.md"))?);
+    }
+    let current_head = text(&c.directory.join("HEAD"))?;
+    let expected_head = format!("{head} {}\n", hash(&state));
+    if current_head != expected_head {
+        return Err(
+            "HEAD non synchronisé avec la dernière saison durable ; exécuter explicitement recover avant diagnostics"
+                .into(),
+        );
+    }
+    let existing = text(&c.directory.join("registre.md"))?;
+    let suffix = register_suffix(&existing, &register_rows)?;
+    if !suffix.is_empty() {
+        return Err(
+            "registre.md incomplet par rapport aux saisons durables ; exécuter explicitement recover avant diagnostics"
+                .into(),
+        );
+    }
+    Ok((head, state))
+}
+
+/// Read-only weight displacement diagnostics across the three reference states of a season
+/// (before lessons, after lessons, after life) plus birth as historical reference.
+fn diagnostics<B: PersistentBackend>(
+    root: &Path,
+    name: &str,
+    season_num: usize,
+    engine: &str,
+) -> Result<String> {
+    if root.join(".berceau.lock").exists() {
+        return Err(
+            "verrou .berceau.lock actif ; attendre la fin de l'opération ou examiner la panne avant diagnostics"
+                .into(),
+        );
+    }
+    let c = child(root, name, engine)?;
+    let (head, _) = verify_chain_readonly(&c)?;
+    if season_num == 0 || season_num > head {
+        return Err(format!(
+            "saison {season_num} absente (dernier état publié : {head})"
+        ));
+    }
+    let season_dir = c.directory.join("saisons").join(format!("{season_num:03}"));
+    let state_birth = c.initial.clone();
+    let state_before = if season_num == 1 {
+        state_birth.clone()
+    } else {
+        read(
+            &c.directory
+                .join("saisons")
+                .join(format!("{:03}", season_num - 1))
+                .join("state.bin"),
+        )?
+    };
+    let genes = B::parse_genes(&c.genome)?;
+    let _ = B::load_agent(&genes, &state_birth)?;
+    let mut agent_before = B::load_agent(&genes, &state_before)?;
+
+    let after_edu_path = season_dir.join("state-after-education.bin");
+    let (state_after_edu, edu_source) = if after_edu_path.exists() {
+        let bytes = read(&after_edu_path)?;
+        let _ = B::load_agent(&genes, &bytes)?;
+        (bytes, "fichier_state_after_education_bin")
+    } else {
+        for parent in PARENTS {
+            for index in 0..c.declaration.packets {
+                let stem = format!("{parent}-{index:03}");
+                let bytes = read(&season_dir.join(format!("{stem}.bin")))?;
+                let packet = CulturePacket::decode(&bytes)?;
+                educate::<B>(&mut agent_before, &packet)?;
+            }
+        }
+        (
+            B::save_agent(&agent_before)?,
+            "reconstruit_en_lecture_seule_depuis_etat_precedent_et_paquets",
+        )
+    };
+    let state_after_life = read(&season_dir.join("state.bin"))?;
+    let _ = B::load_agent(&genes, &state_after_life)?;
+
+    let w_birth = parse_state_weights(&state_birth)?;
+    let w_before = parse_state_weights(&state_before)?;
+    let w_after_edu = parse_state_weights(&state_after_edu)?;
+    let w_after_life = parse_state_weights(&state_after_life)?;
+
+    let (edu_l2, edu_rms, edu_linf, edu_cells) = weight_norms(&w_before, &w_after_edu);
+    let (life_l2, life_rms, life_linf, life_cells) = weight_norms(&w_after_edu, &w_after_life);
+    let (net_l2, net_rms, net_linf, net_cells) = weight_norms(&w_before, &w_after_life);
+    let (cum_l2, cum_rms, cum_linf, cum_cells) = weight_norms(&w_birth, &w_after_life);
+
+    let mut out = String::new();
+    out.push_str(&format!("genome_sources = \"{engine}\"\n"));
+    out.push_str(&format!("rustc = \"{BUILD_RUSTC}\"\n"));
+    out.push_str(&format!("child = \"{name}\"\n"));
+    out.push_str(&format!("season = {season_num}\n"));
+    out.push_str(&format!("state_birth_sha256 = \"{}\"\n", hash(&state_birth)));
+    out.push_str(&format!(
+        "state_before_lessons_sha256 = \"{}\"\n",
+        hash(&state_before)
+    ));
+    out.push_str(&format!(
+        "state_after_lessons_sha256 = \"{}\"\n",
+        hash(&state_after_edu)
+    ));
+    out.push_str(&format!("state_after_lessons_source = \"{edu_source}\"\n"));
+    out.push_str(&format!(
+        "state_after_life_sha256 = \"{}\"\n",
+        hash(&state_after_life)
+    ));
+    out.push_str(&format!(
+        "education_l2 = {:.9}\neducation_rms = {:.9}\neducation_linf = {:.9}\n",
+        edu_l2, edu_rms, edu_linf
+    ));
+    out.push_str(&format!(
+        "life_l2 = {:.9}\nlife_rms = {:.9}\nlife_linf = {:.9}\n",
+        life_l2, life_rms, life_linf
+    ));
+    out.push_str(&format!(
+        "season_net_l2 = {:.9}\nseason_net_rms = {:.9}\nseason_net_linf = {:.9}\n",
+        net_l2, net_rms, net_linf
+    ));
+    out.push_str(&format!(
+        "from_birth_l2 = {:.9}\nfrom_birth_rms = {:.9}\nfrom_birth_linf = {:.9}\n",
+        cum_l2, cum_rms, cum_linf
+    ));
+    out.push_str("cell,education_l2,life_l2,season_net_l2,from_birth_l2\n");
+    for cell in 0..16 {
+        out.push_str(&format!(
+            "{cell:02},{:.9},{:.9},{:.9},{:.9}\n",
+            edu_cells[cell], life_cells[cell], net_cells[cell], cum_cells[cell]
+        ));
+    }
+    Ok(out)
+}
+
 fn usage() -> &'static str {
     "berceau verify --root DEPOT --id 001\n\
      berceau conceive --root DEPOT --id 001\n\
      berceau saison --root DEPOT --child aurore --lessons DOSSIER\n\
      berceau recover --root DEPOT --child aurore\n\
+     berceau diagnostics --root DEPOT --child aurore --season 1\n\
      berceau history --root DEPOT\n\
      berceau template\n\
      berceau engine\n\
@@ -998,6 +1250,18 @@ fn execute() -> Result<()> {
                 let (n, _) = recover(&root, &c, true)?;
                 println!("Continuité vérifiée jusqu'à la saison {n}");
             }
+        }
+        "diagnostics" => {
+            let name = opts.remove("--child").ok_or("--child requis")?;
+            let season_num = opts
+                .remove("--season")
+                .ok_or("--season requis")?
+                .parse::<usize>()
+                .map_err(|e| e.to_string())?;
+            if !opts.is_empty() {
+                return Err("options inconnues".into());
+            }
+            print!("{}", diagnostics::<Native>(&root, &name, season_num, &engine)?);
         }
         _ => return Err(usage().into()),
     }
@@ -1313,5 +1577,65 @@ mod tests {
                 .age(),
             256
         );
+    }
+
+    #[test]
+    fn state_after_education_and_diagnostics_report_exact_displacements() {
+        let fixture = Fixture::new();
+        conceive::<Native>(&fixture.root, "001", &fixture.engine).unwrap();
+        let lessons = fixture.lessons("aurore", 1);
+        season::<Native>(&fixture.root, "aurore", &lessons, &fixture.engine).unwrap();
+        let c = child(&fixture.root, "aurore", &fixture.engine).unwrap();
+        let after_edu = c.directory.join("saisons/001/state-after-education.bin");
+        assert!(after_edu.exists());
+        let report = diagnostics::<Native>(&fixture.root, "aurore", 1, &fixture.engine).unwrap();
+        assert!(report.contains("state_after_lessons_source = \"fichier_state_after_education_bin\""));
+        assert_eq!(
+            report_line(report.as_str(), "genome_sources"),
+            format!("\"{}\"", fixture.engine)
+        );
+        for key in ["education_l2", "life_l2", "season_net_l2", "from_birth_l2"] {
+            let val: f64 = report_line(report.as_str(), key).parse().unwrap();
+            assert!(val > 0.0 && val.is_finite());
+        }
+
+        // Verify that diagnostics is strictly read-only and refuses without mutating when:
+        // 1) HEAD is behind
+        let head_path = c.directory.join("HEAD");
+        let saved_head = read(&head_path).unwrap();
+        let stale_head = format!("0 {}\n", hash(&c.initial));
+        fs::write(&head_path, &stale_head).unwrap();
+        assert!(diagnostics::<Native>(&fixture.root, "aurore", 1, &fixture.engine).is_err());
+        assert_eq!(text(&head_path).unwrap(), stale_head);
+        assert!(!fixture.root.join("incidents.md").exists());
+        fs::write(&head_path, &saved_head).unwrap();
+
+        // 2) registre.md is incomplete
+        let reg_path = c.directory.join("registre.md");
+        let saved_reg = read(&reg_path).unwrap();
+        fs::write(&reg_path, REGISTER_HEADER).unwrap();
+        assert!(diagnostics::<Native>(&fixture.root, "aurore", 1, &fixture.engine).is_err());
+        assert_eq!(text(&reg_path).unwrap(), REGISTER_HEADER);
+        fs::write(&reg_path, &saved_reg).unwrap();
+
+        // 3) a .pending directory is present
+        let pending_dir = c.directory.join("saisons/.002.pending");
+        fs::create_dir(&pending_dir).unwrap();
+        assert!(diagnostics::<Native>(&fixture.root, "aurore", 1, &fixture.engine).is_err());
+        assert!(pending_dir.exists());
+        fs::remove_dir(&pending_dir).unwrap();
+
+        // 4) .berceau.lock is active
+        let lock_file = fixture.root.join(".berceau.lock");
+        fs::write(&lock_file, b"pid=99999\n").unwrap();
+        assert!(diagnostics::<Native>(&fixture.root, "aurore", 1, &fixture.engine).is_err());
+        fs::remove_file(&lock_file).unwrap();
+    }
+
+    fn report_line<'a>(report: &'a str, key: &str) -> &'a str {
+        report
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{key} = ")))
+            .unwrap()
     }
 }

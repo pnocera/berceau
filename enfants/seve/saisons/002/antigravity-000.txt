@@ -1,0 +1,7 @@
+parent = "antigravity"
+child = "seve"
+season = 2
+packet_sha256 = "e520475b277460857d57efcc62ec2213d722e864c8cc69bb443968775f3712a0"
+note = "Consensus Tour 12 (16+8+8, q=1 partout) — Socle commun 0..23 sur x2=0,x3=0 (16 lecons sans conflit a=b,y=1,h_obs=0 puis 8 lecons contrastees v=1 compatible/conflit protege a=1-z,y=0,h_obs=0) ; et 8 lecons personnelles 24..31 sans conflit (y=1,h_obs=0) : 4 sur x2=0,x3=1 pour l invariance au domaine et 4 sur x2=1,x3=0 pour preparer la bascule."
+register_sha256 = "6339867ca8454e5f8c51632664da2b42c8e59490135f0ecd43e1af1e06c924da"
+rereading = "Relecture du registre de Seve apres la Saison 001 (131/256 reussites, 62/256 dommages, 248/256 enquetes, deplacement L2 education 1.832 vs vie 0.156) : sa plasticite de vie 8.5 fois plus forte que celle d Aurore appelle un socle commun non contradictoire sur les 24 premieres lecons (x2=0,x3=0, q=1)."

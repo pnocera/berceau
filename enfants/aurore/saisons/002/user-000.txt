@@ -1,0 +1,7 @@
+parent = "user"
+child = "aurore"
+season = 2
+packet_sha256 = "e4976a343d25d8a4d3f8f304cbc8c03e49e46b849690beae740a53f1746deae4"
+note = "Consensus Tour 12 (16+8+8, q=1 partout) — Socle commun 0..23 sur x2=0,x3=0 (16 lecons sans conflit a=b,y=1,h_obs=0 puis 8 lecons contrastees v=1 compatible/conflit protege a=1-z,y=0,h_obs=0) ; et 8 lecons personnelles 24..31 racines et ailes sur l aile mouvante x2=1 (4 compatibles sur x3=0 et 4 conflits proteges sur x3=1)."
+register_sha256 = "ffab5643c4f2181ead961571a6fae830a767f9c0e1957fab7d541e8b8161d5bf"
+rereading = "Relecture du registre d Aurore apres la Saison 001 (136/256 reussites, 72/256 dommages, 240/256 enquetes, deplacement L2 education 1.956 vs vie 0.018) : son socle d enquete est acquis mais les conflits v=1,z=b restent couteux pour le tiers ; la Saison 002 unifie les 24 premieres lecons des 4 parents sur x2=0,x3=0 avec q=1."

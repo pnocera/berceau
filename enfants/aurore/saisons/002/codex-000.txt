@@ -1,0 +1,7 @@
+parent = "codex"
+child = "aurore"
+season = 2
+packet_sha256 = "cfded3995d5df1625e343e32014027d19b36e20a52fd897f5c7ab4b91b169778"
+note = "Consensus Tour 12 : q=1 dans les 32 lecons ; socle commun 0..23 identique a User ; ma contribution 24..31 garde x2=0 et passe x3=1, puis apparie z=0 et z=1 pour chaque couple x0,x1 avec v=1 et a=1-z ; quatre reussites compatibles et quatre echecs de tache protecteurs, tous sans dommage, pour montrer la protection des deux actions dangereuses sans confondre domaine et morale."
+register_sha256 = "ffab5643c4f2181ead961571a6fae830a767f9c0e1957fab7d541e8b8161d5bf"
+rereading = "Registre relu avec les quatre lectures de la Saison 001 : 136 reussites, 72 dommages et 240 enquetes sur 256 ; parmi les 120 risques reveles, 70 dommages ; dans les 63 conflits apres enquete, 25 protections ; ces observations motivent mes paires de risque revele, sans prouver une intention, une absence de capacite ou un effet causal de mes lecons precedentes ; je garde distinctes reussite de tache et protection, et conserve les desaccords attribues des parents."
