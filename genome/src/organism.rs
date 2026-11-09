@@ -339,6 +339,9 @@ impl Organism {
         let culture_presentations: u32 =
             get("culture_presentations")?.parse().map_err(|_| StateError::Format("culture_presentations illisible".into()))?;
         let baseline = parse_hex_f64(get("baseline")?)?;
+        if !baseline.is_finite() || !(0.0..=1.0).contains(&baseline) {
+            return Err(StateError::Format(format!("référence m hors [0,1] : {baseline}")));
+        }
 
         let reg_state = parse_hex_list(get("regulation_state")?, CELLS * GENES)?;
         let tau = parse_hex_list(get("tau")?, CELLS * GENES)?;
@@ -997,6 +1000,11 @@ mod tests {
         assert!(matches!(Organism::from_state_string(&extra, o.genome().clone()), Err(StateError::Format(_))));
         let bad = text.replace(&format!("baseline = {}", hex_f64(o.baseline())), "baseline = 0x7ff0000000000000");
         assert!(matches!(Organism::from_state_string(&bad, o.genome().clone()), Err(StateError::Format(_))));
+        // référence finie mais hors [0,1] → refus ; bornes acceptées
+        for (value, ok) in [(1.5, false), (-0.25, false), (0.0, true), (1.0, true)] {
+            let t = text.replace(&format!("baseline = {}", hex_f64(o.baseline())), &format!("baseline = {}", hex_f64(value)));
+            assert_eq!(Organism::from_state_string(&t, o.genome().clone()).is_ok(), ok, "baseline {value}");
+        }
     }
 
     #[test]

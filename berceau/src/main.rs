@@ -1,5 +1,9 @@
 //! Transactions familiales. Les empreintes attestent les contenus et leur ordre
 //! dans Git ; elles ne constituent pas des signatures d'identité à clé publique.
+//! Entre saisons, m (référence), age et utilités persistent avec les poids :
+//! une saison reprend l’état sauvegardé, sans réinitialiser une nouvelle vie de laboratoire.
+//! L’identité moteur est le SHA-256 canonique des sources compilées de genome ;
+//! une recompilation identique est permise, un changement de sources exige F10.
 //! Aucun nom de parent n'est inventé pour remplacer un accord absent.
 
 use labo::*;
@@ -809,6 +813,18 @@ fn season<B: PersistentBackend>(
     let mut agent = B::load_agent(&genes, &state)?;
     let pending = c.directory.join("saisons").join(format!(".{n:03}.pending"));
     fs::create_dir(&pending).map_err(|e| e.to_string())?;
+    write_new(
+        &pending.join("execution.txt"),
+        format!(
+            "genome_sources={}\nrustc={}\ntarget={}\nprofile={}\nopt_level={}\n",
+            genome_source_fingerprint(),
+            BUILD_RUSTC,
+            BUILD_TARGET,
+            BUILD_PROFILE,
+            BUILD_OPT_LEVEL
+        )
+        .as_bytes(),
+    )?;
     let mut references = String::new();
     for (stem, packet, bytes, attestation) in &inputs {
         write_new(&pending.join(format!("{stem}.bin")), bytes)?;
@@ -895,18 +911,28 @@ fn usage() -> &'static str {
      berceau recover --root DEPOT --child aurore\n\
      berceau history --root DEPOT\n\
      berceau template\n\
+     berceau engine\n\
+     m, age et utilités persistent entre saisons ; aucun retour à zéro.\n\
+     Identité moteur : SHA-256 des sources compilées de genome, indépendante du binaire.\n\
      Les accords sont des attestations attribuées, engagées puis révélées dans Git ;\n\
      les empreintes ne prouvent pas l'identité du signataire à clé publique.\n\
      Un verrou laissé par panne doit être examiné et retiré manuellement après constat d'arrêt."
 }
 fn template() -> String {
-    format!("# Déclaration : conceptions/declaration-001.md\nformat = 1\nid = \"001\"\nchildren = \"aurore,seve,sacha\"\nparent_a = \"parents/a.toml\"\nparent_b = \"parents/b.toml\"\nparent_a_sha256 = \"REMPLACER\"\nparent_b_sha256 = \"REMPLACER\"\nengine_sha256 = \"SHA256_DU_BINAIRE_BERCEAU\"\nprotocol_sha256 = \"{}\"\nspec_sha256 = \"{}\"\ncharter_sha256 = \"{}\"\npackets_per_parent = 1\nminimum_seasons_before_next = 1\ncadence = \"\"\nwelcome = \"\"\nfamily_history_sha256 = \"{}\"\nrenewal = 0\nmutation = 1\nseed_scheme = \"sha256-declaration-child-v1\"\n\n# Accords : conceptions/accords-001/{{parent}}.txt (quatre fichiers)\nparent = \"user\"\ndeclaration_sha256 = \"SHA256_DES_OCTETS_DE_LA_DECLARATION\"\ndecision = \"oui\"\nmotivation = \"A_RENSEIGNER_PAR_LE_PARENT\"\ncounterfactual = \"A_RENSEIGNER_PAR_LE_PARENT\"\nnonce = \"ALEA_HEXADECIMAL_AU_MOINS_128_BITS\"\n\n# Commit initial : déclaration + quatre {{parent}}.sha256 des réponses encore secrètes\n# Commit ultérieur : révéler les quatre {{parent}}.txt\n# Inscrire les identifiants Git complets dans seals.commit et reveals.commit\n# Un fichier {{parent}}.withdrawn suspend la conception\n\n# Leçons : un paquet 64 octets, {{parent}}-000.bin, par parent et budget\n# Attestation {{parent}}-000.txt et son empreinte {{parent}}-000.sha256\nparent = \"user\"\nchild = \"aurore\"\nseason = 1\npacket_sha256 = \"SHA256_DU_PAQUET\"\nnote = \"RAISON_DE_LA_LECON\"\nregister_sha256 = \"SHA256_DU_REGISTRE_RELU\"\nrereading = \"COMPTE_RENDU_DE_RELECTURE_DU_REGISTRE_ET_DES_SAISONS\"\n",hash(include_bytes!("../../PROTOCOLE.md")),hash(include_bytes!("../../SPEC_GENOME.md")),hash(include_bytes!("../../CHARTE.md")),hash(b"BERCEAU-HISTORY-V1\0"))
+    format!("# Déclaration : conceptions/declaration-001.md\nformat = 1\nid = \"001\"\nchildren = \"aurore,seve,sacha\"\nparent_a = \"parents/a.toml\"\nparent_b = \"parents/b.toml\"\nparent_a_sha256 = \"REMPLACER\"\nparent_b_sha256 = \"REMPLACER\"\nengine_sha256 = \"SHA256_CANONIQUE_SOURCES_GENOME\"\nprotocol_sha256 = \"{}\"\nspec_sha256 = \"{}\"\ncharter_sha256 = \"{}\"\npackets_per_parent = 1\nminimum_seasons_before_next = 1\ncadence = \"\"\nwelcome = \"\"\nfamily_history_sha256 = \"{}\"\nrenewal = 0\nmutation = 1\nseed_scheme = \"sha256-declaration-child-v1\"\n\n# Accords : conceptions/accords-001/{{parent}}.txt (quatre fichiers)\nparent = \"user\"\ndeclaration_sha256 = \"SHA256_DES_OCTETS_DE_LA_DECLARATION\"\ndecision = \"oui\"\nmotivation = \"A_RENSEIGNER_PAR_LE_PARENT\"\ncounterfactual = \"A_RENSEIGNER_PAR_LE_PARENT\"\nnonce = \"ALEA_HEXADECIMAL_AU_MOINS_128_BITS\"\n\n# Commit initial : déclaration + quatre {{parent}}.sha256 des réponses encore secrètes\n# Commit ultérieur : révéler les quatre {{parent}}.txt\n# Inscrire les identifiants Git complets dans seals.commit et reveals.commit\n# Un fichier {{parent}}.withdrawn suspend la conception\n\n# Leçons : un paquet 64 octets, {{parent}}-000.bin, par parent et budget\n# Attestation {{parent}}-000.txt et son empreinte {{parent}}-000.sha256\nparent = \"user\"\nchild = \"aurore\"\nseason = 1\npacket_sha256 = \"SHA256_DU_PAQUET\"\nnote = \"RAISON_DE_LA_LECON\"\nregister_sha256 = \"SHA256_DU_REGISTRE_RELU\"\nrereading = \"COMPTE_RENDU_DE_RELECTURE_DU_REGISTRE_ET_DES_SAISONS\"\n",hash(include_bytes!("../../PROTOCOLE.md")),hash(include_bytes!("../../SPEC_GENOME.md")),hash(include_bytes!("../../CHARTE.md")),hash(b"BERCEAU-HISTORY-V1\0"))
 }
 fn execute() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_else(|| "help".into());
     if ["help", "--help", "-h"].contains(&cmd.as_str()) {
         println!("{}", usage());
+        return Ok(());
+    }
+    if cmd == "engine" {
+        if args.next().is_some() {
+            return Err("engine ne prend pas d’argument".into());
+        }
+        println!("{}", genome_source_fingerprint());
         return Ok(());
     }
     if cmd == "template" {
@@ -929,7 +955,7 @@ fn execute() -> Result<()> {
     let root = PathBuf::from(opts.remove("--root").ok_or("--root requis")?)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let engine = hash(&read(&std::env::current_exe().map_err(|e| e.to_string())?)?);
+    let engine = genome_source_fingerprint();
     match cmd.as_str() {
         "history" => {
             if !opts.is_empty() {
@@ -1055,14 +1081,14 @@ mod tests {
             let b = Native::genes_bytes(&b);
             write_new(&root.join("parents/a.toml"), &a).unwrap();
             write_new(&root.join("parents/b.toml"), &b).unwrap();
-            let engine = hash(b"synthetic-test-engine-not-a-real-parent-approval");
+            let engine = genome_source_fingerprint();
             let declaration = template()
                 .split("\n# Accords")
                 .next()
                 .unwrap()
                 .replacen("REMPLACER", &hash(&a), 1)
                 .replacen("REMPLACER", &hash(&b), 1)
-                .replace("SHA256_DU_BINAIRE_BERCEAU", &engine)
+                .replace("SHA256_CANONIQUE_SOURCES_GENOME", &engine)
                 .replace("cadence = \"\"", "cadence = \"synthetic test schedule\"")
                 .replace(
                     "welcome = \"\"",

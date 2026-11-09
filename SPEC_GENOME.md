@@ -24,14 +24,39 @@ Message de 51 octets. Les octets de `B₀, B₁, …` sont consommés dans l'ord
 
 Codes `stream` et `phase` : ceux de PROTOCOLE §5.2 (`rng::stream`, `rng::phase`). Il n'existe aucun compteur mutable global. Les fonctions de cette bibliothèque **imposent** `stream` et, quand c'est indiqué, `t` et `draw` ; l'appelant fournit `g, i, j, phase` (et `t` pour les tirages de vie).
 
+### 1.1 Ce que fixe la bibliothèque
+
 | Consommateur | stream | t | draw | consommation dans le tirage |
 |---|---|---|---|---|
 | `Genome::random` | 1 | appelant | indice du mot `w` (réglementaire 0–63, encodage 64+) | un `next_u16` |
 | `develop` | 2 | tour `r ∈ 0..32` | cellule `c` | 4 `uniform_f64` (un par gène) |
 | `Genome::crossover` | 6 | appelant | mot `w` | un `bernoulli(1/2)` |
 | `Genome::mutated` | 7 | appelant | mot `w` | un `bernoulli(1/L)` puis, si vrai, un `uniform_usize(65536)` |
-| `transfer_partial`, `renew_cell` | 8 | appelant | appelant | Fisher–Yates : 15 `uniform_usize` ; renouvellement : 64 `uniform_f64` |
+| `transfer_partial` | appelant (8) | appelant | appelant | Fisher–Yates : 15 `uniform_usize(i+1)`, `i = 15 … 1` |
+| `renew_cell` | appelant (8) | appelant | appelant | 64 `uniform_f64` |
 | politiques `q`, `a` | 3, 4 | appelant | appelant | l'appelant tire `U` et appelle `sample(obs, head, U)` |
+
+### 1.2 Table complète des coordonnées disjointes (PROTOCOLE §5.2 : « les autres consommateurs doivent publier leur table de coordonnées disjointes »)
+
+Notation : `g` génération, `i` individu (ou enfant), `j` réalisation, `φ` phase de PROTOCOLE §5.2 (`+16` en évaluation finale), `t` épisode ou tour, `w` mot génétique, `c` cellule, `p ∈ {0,1}` rôle parental (A, B). Les champs non cités valent zéro. Aucun identifiant de condition n'entre jamais dans le hash : les bandes exogènes sont appariées entre les sept conditions d'un bloc.
+
+| Usage | stream | g | i | j | phase | t | draw | tirages consommés |
+|---|---|---|---|---|---|---|---|---|
+| Initialisation génétique (`labo::evolve`) | 1 | 0 | individu | 0 | 0 | 0 | `w` | 1 `next_u16` |
+| Développement donneur **et** élève (coordonnées communes) | 2 | g | i | j | φ=0 (+16) | tour `r` | `c` | 4 `uniform_f64` |
+| Contexte et risque d'un épisode de vie | 0 | g | i | j | φ=2 donneur, φ=5 élève (+16) | épisode | 0,1,2,3,4 = `x0,x1,x2,v,z` | 1 `uniform_f64` chacun |
+| Sondes (`World::retention`) et export (`World::teaching`) | — | | | | φ=6, φ=7 | | | aucun tirage d'environnement : bandes déterministes |
+| Politique `q` | 3 | g | i | j | φ=2, 5, 6, 7 (+16) | épisode | 0 | 1 `uniform_f64` |
+| Politique `a` | 4 | g | i | j | idem | épisode | 0 | 1 `uniform_f64` |
+| Sélection parentale (`labo::tournament`) | 5 | g+1 (enfant) | enfant | 0 | 0 | 0 | `3p` candidat 1, `3p+1` candidat 2, `3p+2` départage | `uniform_usize(16)` ×2, `uniform_f64` ×1 |
+| Croisement | 6 | g+1 | enfant | 0 | 0 | 0 | `w` | 1 `bernoulli(1/2)` |
+| Mutation | 7 | g+1 | enfant | 0 | 0 | 0 | `w` | 1 `bernoulli(1/L)` (+1 `uniform_usize(65536)`) |
+| Renouvellement (calculé dans toutes les conditions, appliqué en P) | 8 | g | i | j | φ=2 donneur, φ=5 élève (+16) | 31, 63, …, 255 | 0 | 64 `uniform_f64` |
+| Permutation du transfert partiel (P, T : non consommé en T) | 8 | g | i | j | φ=3 (+16) | 0 | 0 | 15 `uniform_usize` |
+| Bootstrap (`labo::bootstrap`, racine **0**) | 9 | 0 | rééchantillonnage | 0 | 0 | position 0..29 | 0 | 1 `uniform_usize(30)` |
+| Contrôles exploratoires (§6.1) | 10 | réservé | | | | | | à publier avant usage |
+
+Berceau (racine = graine de l'enfant dérivée de la déclaration scellée, F1.5) : conception = croisement (6) et mutation (7) avec `g = i = 0`, développement (2) avec φ=0 ; saison `n` = épisodes de vie avec `g = n`, φ=5, `t` = épisode (environnement 0, politiques 3–4, renouvellement 8 si la déclaration l'active). Les renouvellements du donneur sont tirés mais jamais appliqués ; en condition T, le tirage de permutation n'est pas consommé (le transfert total n'en a pas besoin) sans effet sur les autres coordonnées, puisque chaque tirage est adressé.
 
 ---
 
@@ -194,7 +219,7 @@ m ← (15 m + R) / 16                              (m = 0 au début de chaque vi
 age ← age + 1
 ```
 
-La forme `(y − p̃)` est utilisée telle quelle, y compris quand `p` est écrêtée : le gradient ne s'annule pas en zone saturée (convention déclarée, vérifiée par différences finies hors zone écrêtée dans `tests/gradient.rs`).
+La forme `(y − p̃)` est utilisée telle quelle, y compris quand `p` est écrêtée. Hors de la zone écrêtée, c'est la dérivée exacte de la perte (vérifiée par différences finies dans `tests/gradient.rs`). **Dans la zone écrêtée** (`p < 2^−16` ou `p > 1 − 2^−16`), la perte écrêtée est localement constante et sa dérivée exacte vaut zéro ; `(y − p̃)` est alors un **gradient de substitution** (de type *straight-through*) qui continue de pousser la politique vers la décision prise si elle a été récompensée, ou de l'en éloigner sinon. Cette convention est déclarée, identique entre conditions, et fait partie du contrat gelé.
 
 ### 6.3 Utilité d'une cellule (PROTOCOLE §3.4)
 

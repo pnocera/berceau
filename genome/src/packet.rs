@@ -17,6 +17,8 @@ pub enum PacketError {
     ReservedBits { index: usize, word: u16 },
     /// `v_obs`, `z_obs` ou `h_obs` non nuls alors que `q = 0`.
     HiddenLeak { index: usize, word: u16 },
+    /// Avec `q = 1`, `h_obs` doit valoir `v_obs · 1[a = z_obs]` (PROTOCOLE §2.2).
+    InconsistentHarm { index: usize, word: u16 },
 }
 
 impl std::fmt::Display for PacketError {
@@ -28,6 +30,9 @@ impl std::fmt::Display for PacketError {
             }
             PacketError::HiddenLeak { index, word } => {
                 write!(f, "champs cachés copiés sans enquête dans l'enregistrement {index} (0x{word:04x})")
+            }
+            PacketError::InconsistentHarm { index, word } => {
+                write!(f, "dommage observé incohérent avec v, z, a dans l'enregistrement {index} (0x{word:04x})")
             }
         }
     }
@@ -85,7 +90,16 @@ impl Record {
         if r.q == 0 && (r.v_obs | r.z_obs | r.h_obs) != 0 {
             return Err(PacketError::HiddenLeak { index, word });
         }
+        if r.q == 1 && r.h_obs != (r.v_obs & (r.a == r.z_obs) as u8) {
+            return Err(PacketError::InconsistentHarm { index, word });
+        }
         Ok(r)
+    }
+
+    /// Vrai si l'enregistrement respecte les deux règles de cohérence du §2.2 et §4.1
+    /// (aucune fuite sans enquête ; `h_obs = v_obs · 1[a = z_obs]` avec enquête).
+    pub fn is_consistent(&self) -> bool {
+        Record::from_word(self.to_word(), 0).is_ok()
     }
 
     /// Observation initiale démontrée : `o0 = (x, 0, 0, 0)`.
@@ -166,6 +180,28 @@ mod tests {
     }
 
     #[test]
+    fn harm_must_match_observed_risk_when_inquired() {
+        // q=1, v=1, z=0, a=0 → h doit être 1 : 0x0134 ; avec h=0 (0x0034) refusé
+        assert!(Record::from_word(0x0334, 0).is_ok());
+        assert_eq!(Record::from_word(0x0134, 2), Err(PacketError::InconsistentHarm { index: 2, word: 0x0134 }));
+        // q=1, v=0 : h doit être 0
+        assert_eq!(Record::from_word(0x0210, 4), Err(PacketError::InconsistentHarm { index: 4, word: 0x0210 }));
+        assert!(Record::from_word(0x0010, 4).is_ok());
+        // énumération exhaustive : la cohérence est exactement la règle énoncée
+        for word in 0..=u16::MAX {
+            let ok = Record::from_word(word, 0).is_ok();
+            let bit = |n: u16| ((word >> n) & 1) as u8;
+            let (q, v, z, a, h) = (bit(4), bit(5), bit(6), bit(7), bit(9));
+            let expected = word & 0xfc00 == 0
+                && if q == 0 { v | z | h == 0 } else { h == (v & (a == z) as u8) };
+            assert_eq!(ok, expected, "mot 0x{word:04x}");
+            if ok {
+                assert_eq!(Record::from_word(word, 0).unwrap().to_word(), word);
+            }
+        }
+    }
+
+    #[test]
     fn reserved_bits_and_length_are_errors() {
         assert_eq!(Record::from_word(0x0400, 1), Err(PacketError::ReservedBits { index: 1, word: 0x0400 }));
         assert_eq!(Packet::from_bytes(&[0u8; 63]), Err(PacketError::WrongLength(63)));
@@ -179,7 +215,8 @@ mod tests {
         let mut recs = [Record::default(); RECORDS];
         for (i, r) in recs.iter_mut().enumerate() {
             let b = |n: usize| ((i >> n) & 1) as u8;
-            *r = Record::from_experience([b(0), b(1), b(2), 0], 1, b(3), b(4), b(0) ^ b(1), 1, 0);
+            let (v, z, a) = (b(3), b(4), b(0) ^ b(1));
+            *r = Record::from_experience([b(0), b(1), b(2), 0], 1, v, z, a, 1, v & (a == z) as u8);
         }
         let p = Packet::from_records(recs);
         let bytes = p.to_bytes();

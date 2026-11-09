@@ -219,16 +219,33 @@ impl Genome {
                 .ok_or_else(|| GenomeError::Format(format!("ligne {} sans '='", n + 1)))?;
             let key = key.trim();
             let value = value.trim();
+            let duplicate = || GenomeError::Format(format!("clé répétée : {key}"));
             match key {
                 "berceau-genome-format" => {
+                    if version.is_some() {
+                        return Err(duplicate());
+                    }
                     version = Some(value.parse().map_err(|_| GenomeError::Format(format!("version illisible : {value}")))?)
                 }
                 "kind" => {
+                    if kind.is_some() {
+                        return Err(duplicate());
+                    }
                     let name = value.trim_matches('"');
                     kind = Some(EncodingKind::parse(name).ok_or_else(|| GenomeError::Format(format!("nature inconnue : {name}")))?)
                 }
-                "regulatory" => regulatory = Some(parse_list(value)?),
-                "encoding" => encoding = Some(parse_list(value)?),
+                "regulatory" => {
+                    if regulatory.is_some() {
+                        return Err(duplicate());
+                    }
+                    regulatory = Some(parse_list(value)?)
+                }
+                "encoding" => {
+                    if encoding.is_some() {
+                        return Err(duplicate());
+                    }
+                    encoding = Some(parse_list(value)?)
+                }
                 other => return Err(GenomeError::Format(format!("clé inconnue : {other}"))),
             }
         }
@@ -331,6 +348,11 @@ mod tests {
         let text = g.to_canonical_string().replace("\"indirect\"", "\"direct\"");
         assert!(matches!(Genome::parse(&text), Err(GenomeError::WordCount { .. })));
         let text = g.to_canonical_string().replace("format = 1", "format = 2");
+        assert!(matches!(Genome::parse(&text), Err(GenomeError::Format(_))));
+        // clé répétée, même avec une valeur identique
+        let text = format!("{}kind = \"indirect\"\n", g.to_canonical_string());
+        assert_eq!(Genome::parse(&text), Err(GenomeError::Format("clé répétée : kind".into())));
+        let text = format!("berceau-genome-format = 1\n{}", g.to_canonical_string());
         assert!(matches!(Genome::parse(&text), Err(GenomeError::Format(_))));
     }
 

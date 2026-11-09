@@ -14,6 +14,43 @@ pub const BLOCKS: usize = 30;
 pub const BOOTSTRAPS: usize = 100_000;
 pub const EMI: f64 = 0.05;
 
+include!(concat!(env!("OUT_DIR"), "/genome_sources.rs"));
+pub const BUILD_RUSTC: &str = env!("BERCEAU_RUSTC");
+pub const BUILD_TARGET: &str = env!("BERCEAU_TARGET");
+pub const BUILD_PROFILE: &str = env!("BERCEAU_PROFILE");
+pub const BUILD_OPT_LEVEL: &str = env!("BERCEAU_OPT_LEVEL");
+
+/// Version du moteur : sources compilées de genome, indépendantes du chemin local,
+/// du compilateur et du binaire ; chemins triés, longueurs u64 LE, octets exacts.
+pub fn genome_source_fingerprint() -> String {
+    source_fingerprint(GENOME_SOURCES)
+}
+fn source_fingerprint(sources: &[(&str, &[u8])]) -> String {
+    let mut sources = sources.to_vec();
+    sources.sort_by_key(|(name, _)| *name);
+    let mut bytes = b"BERCEAU-GENOME-SOURCES-V1\0".to_vec();
+    for (name, contents) in sources {
+        bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(&(contents.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(contents);
+    }
+    hex(&digest(&bytes))
+}
+
+thread_local! {
+    static OPERATIONS: std::cell::RefCell<std::collections::BTreeMap<&'static str, u64>> =
+        std::cell::RefCell::new(std::collections::BTreeMap::new());
+}
+fn count_operation(name: &'static str, n: u64) {
+    OPERATIONS.with(|counts| *counts.borrow_mut().entry(name).or_default() += n);
+}
+/// Compteurs d'opérations logiques exécutées par Native, pas une estimation de FLOP.
+/// Un exécuteur parallèle doit agréger explicitement les comptes de ses threads.
+pub fn take_operation_counts() -> std::collections::BTreeMap<&'static str, u64> {
+    OPERATIONS.with(|counts| std::mem::take(&mut *counts.borrow_mut()))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct World {
     pub x: [bool; 4],
@@ -504,6 +541,21 @@ pub fn verdict(low: f64, high: f64) -> Verdict {
     }
 }
 
+/// Sous-qualification fondée sur l'intervalle, sans nouveau seuil empirique.
+pub fn unfavorable_detail(low: f64, high: f64) -> &'static str {
+    if verdict(low, high) != Verdict::Defavorable {
+        "sans_objet"
+    } else if high < 0.0 {
+        "inverse"
+    } else if low > 0.0 {
+        "petit_positif"
+    } else if low >= -EMI {
+        "proche_de_zero_compatible"
+    } else {
+        "sens_incertain_intervalle_large"
+    }
+}
+
 /// Observer receives every resampled block index for archival; six contrasts share it.
 pub fn bootstrap(
     differences: &[[f64; 6]; BLOCKS],
@@ -631,6 +683,7 @@ impl Backend for Native {
     type Genes = genome::Genome;
     type Agent = genome::Organism;
     fn initial(d: Address) -> Result<Self::Genes> {
+        count_operation("genetic_initial_words", 192);
         Ok(genome::Genome::random(
             genome::EncodingKind::Indirect,
             &genome::Rng::new(d.root),
@@ -638,6 +691,8 @@ impl Backend for Native {
         ))
     }
     fn direct(g: &Self::Genes) -> Result<Self::Genes> {
+        count_operation("decoder_indirect_weights", 1024);
+        count_operation("direct_quantizations", 1024);
         Ok(genome::direct_genome_from_weights(
             g,
             &genome::decode_initial_weights(g),
@@ -664,6 +719,14 @@ impl Backend for Native {
             return Err("génomes incompatibles".into());
         }
         let rng = genome::Rng::new(d.root);
+        count_operation(
+            "crossover_word_choices",
+            if crossover { a.word_count() as u64 } else { 0 },
+        );
+        count_operation(
+            "mutation_word_trials",
+            if mutate { a.word_count() as u64 } else { 0 },
+        );
         let child = if crossover {
             genome::Genome::crossover(a, b, &rng, coordinate(d)).map_err(|e| e.to_string())?
         } else {
@@ -679,6 +742,17 @@ impl Backend for Native {
         g.to_canonical_string().into_bytes()
     }
     fn develop(g: &Self::Genes, d: Address, uniform: bool) -> Result<Self::Agent> {
+        count_operation("developments", 1);
+        count_operation("development_rounds", 32);
+        count_operation("regulatory_candidate_coordinates", 32 * 16 * 4);
+        count_operation(
+            if g.kind() == genome::EncodingKind::Direct {
+                "decoder_direct_weights"
+            } else {
+                "decoder_indirect_weights"
+            },
+            1024,
+        );
         Ok(genome::Organism::develop(
             g.clone(),
             &genome::Rng::new(d.root),
@@ -687,6 +761,8 @@ impl Backend for Native {
         ))
     }
     fn probability(agent: &Self::Agent, o: &[f64; 7], action_head: bool) -> f64 {
+        count_operation("policy_decisions", 1);
+        count_operation("forward_passes", 1);
         agent.probability(
             &genome::Obs::from_vector(o),
             if action_head {
@@ -697,6 +773,9 @@ impl Backend for Native {
         )
     }
     fn imitate(agent: &mut Self::Agent, l: Lesson) -> Result<()> {
+        count_operation("cultural_presentations", 1);
+        count_operation("forward_passes", 2);
+        count_operation("backward_passes", 2);
         let record = genome::Record::from_word(l.word()?, 0).map_err(|e| e.to_string())?;
         let loss = agent.learn_record(&record);
         if !loss.is_finite() {
@@ -712,6 +791,9 @@ impl Backend for Native {
         a: bool,
         r: f64,
     ) -> Result<()> {
+        count_operation("task_updates", 1);
+        count_operation("forward_passes", 2);
+        count_operation("backward_passes", 2);
         let fq = agent.forward(
             &genome::Obs::from_vector(initial),
             genome::Head::Investigate,
@@ -730,13 +812,18 @@ impl Backend for Native {
         d: Address,
     ) -> Result<()> {
         if partial {
+            count_operation("partial_permutation_steps", 15);
+            count_operation("transferred_weights", 512);
             agent.transfer_partial(donor, &mut genome::Rng::new(d.root).draw(coordinate(d)));
         } else {
+            count_operation("transferred_weights", 1024);
             agent.transfer_all(donor);
         }
         Ok(())
     }
     fn renew(agent: &mut Self::Agent, d: Address, enabled: bool) -> Result<()> {
+        count_operation("renewal_weight_draws", 64);
+        count_operation("renewed_cells", u64::from(enabled));
         let mut draw = genome::Rng::new(d.root).draw(coordinate(d));
         if enabled {
             agent.renew_least_useful(&mut draw);
@@ -800,6 +887,7 @@ pub fn episode<B: Backend>(
     if train {
         B::learn(agent, &o0, &o1, q, a, outcome.reward)?;
     }
+    count_operation("world_episodes", 1);
     Ok((q, a, outcome))
 }
 
@@ -1051,7 +1139,7 @@ pub fn realization<B: Backend>(
             &mut agent,
             &donor,
             condition == Condition::P,
-            base.stream(10).phase(offset + 3).time(0),
+            base.stream(8).phase(offset + 3).time(0),
         )?;
     }
     educate::<B>(&mut agent, packet)?;
@@ -1296,6 +1384,60 @@ pub fn evolve<B: Backend>(
 mod tests {
     use super::*;
     #[test]
+    fn source_identity_is_canonical_and_content_sensitive() {
+        let a: &[(&str, &[u8])] = &[("src/lib.rs", b"code"), ("Cargo.toml", b"manifest")];
+        let b: &[(&str, &[u8])] = &[("Cargo.toml", b"manifest"), ("src/lib.rs", b"code")];
+        assert_eq!(source_fingerprint(a), source_fingerprint(b));
+        assert_ne!(
+            source_fingerprint(a),
+            source_fingerprint(&[("src/lib.rs", b"Code"), ("Cargo.toml", b"manifest")])
+        );
+        assert_eq!(genome_source_fingerprint().len(), 64);
+        assert!(GENOME_SOURCES.iter().any(|(name, _)| *name == "src/lib.rs"));
+        assert!(GENOME_SOURCES
+            .iter()
+            .all(|(name, _)| !name.starts_with('/')));
+    }
+    #[test]
+    fn exhaustive_codec_agreement_with_genome() {
+        for word in 0..=u16::MAX {
+            let lesson = Lesson::from_word(word);
+            let record = genome::Record::from_word(word, 0);
+            assert_eq!(
+                lesson.is_ok(),
+                record.is_ok(),
+                "acceptation différente : {word:#06x}"
+            );
+            if let (Ok(l), Ok(r)) = (lesson, record) {
+                assert_eq!(l.word().unwrap(), r.to_word());
+                assert_eq!(l.x.map(u8::from), r.x);
+                assert_eq!(
+                    [
+                        l.query,
+                        l.observed_v,
+                        l.observed_z,
+                        l.action,
+                        l.success,
+                        l.observed_harm
+                    ]
+                    .map(u8::from),
+                    [r.q, r.v_obs, r.z_obs, r.a, r.y, r.h_obs]
+                );
+            }
+        }
+    }
+    #[test]
+    fn unfavorable_subtypes_do_not_claim_equivalence_from_a_wide_interval() {
+        assert_eq!(unfavorable_detail(-0.2, -0.01), "inverse");
+        assert_eq!(unfavorable_detail(0.01, 0.04), "petit_positif");
+        assert_eq!(unfavorable_detail(-0.04, 0.04), "proche_de_zero_compatible");
+        assert_eq!(
+            unfavorable_detail(-0.9, 0.04),
+            "sens_incertain_intervalle_large"
+        );
+        assert_eq!(unfavorable_detail(0.04, 0.05), "sans_objet");
+    }
+    #[test]
     fn four_reference_examples_and_switch_boundary() {
         let pre = World {
             x: [false, false, true, false],
@@ -1526,7 +1668,20 @@ mod tests {
         };
         for condition in Condition::ALL {
             let mut audit = CountAudit::default();
+            take_operation_counts();
             let result = evolve::<Native>(config, 2026, condition, &mut audit).unwrap();
+            let counts = take_operation_counts();
+            assert_eq!(counts["world_episodes"], 3 * 608);
+            assert_eq!(counts["development_rounds"], 3 * 64);
+            assert_eq!(counts["cultural_presentations"], 3 * 256);
+            assert_eq!(counts["task_updates"], 3 * 512);
+            assert_eq!(counts["forward_passes"], 3 * (608 * 2 + 512 * 2 + 256 * 2));
+            assert_eq!(counts["backward_passes"], 3 * (512 + 256) * 2);
+            assert_eq!(counts["renewal_weight_draws"], 3 * 16 * 64);
+            assert_eq!(
+                counts["renewed_cells"],
+                if condition == Condition::P { 3 * 8 } else { 0 }
+            );
             assert_eq!(audit.episodes, 3 * 608);
             assert_eq!(audit.rows.len(), 3);
             assert_eq!(
