@@ -1,0 +1,14 @@
+pilote = "exploratoire v2"
+protocole_pilote_v2_sha256 = "1e0213540af1bfc702894295ec2f48332556bf997a38e898edfc5cbae96c9cd4"
+spec_genome_sha256 = "a2b2740deb0a4f24164e9fda211ef97395f944bd38611b15d9953d7cbfdb9f63"
+engine_sha256 = "984f29d6eaef0aacf9aed7b66aa55934404c676014ed832f9aa697ddc8f333bc"
+executable_sha256 = "c7640e98473d5c3012d4c9c5a873567c9b9bef03a5ccc6a4bb2ee77d98c5e896"
+rustc = "rustc 1.99.1 (58cf8f9c3 2026-10-13) | binary: rustc | commit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67 | commit-date: 2026-10-13 | host: x86_64-unknown-linux-gnu | release: 1.99.1 | LLVM version: 23.1.1"
+target = "x86_64-unknown-linux-gnu"
+profile = "release"
+opt_level = "3"
+exploration_roots = "100..115"
+validation_roots = "116..131"
+bootstraps = 100000
+low_rank = 5000
+threshold = 0.55

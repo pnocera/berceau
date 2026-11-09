@@ -6,6 +6,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
+pub mod pilote;
+
 pub type Result<T> = std::result::Result<T, String>;
 pub const LIFE: usize = 256;
 pub const SWITCH: usize = 128;

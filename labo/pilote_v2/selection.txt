@@ -1,0 +1,2 @@
+candidat = aucun
+constat = negatif : aucune case ne franchit les deux barres (section 6.2) ; racines de validation non consultees

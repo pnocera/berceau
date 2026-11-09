@@ -1,0 +1,5 @@
+W,L,mean_Ret_aux,low95_Ret_aux,mean_Y_stat,low95_Y_stat,mean_Ret_stat,low95_Ret_stat,barre_basse,barre_haute,qualifiee
+W0,L0,0.542969,0.511719,0.500977,0.488281,0.511719,0.493164,false,false,false
+W1,L0,0.549805,0.496094,0.544434,0.516357,0.549805,0.508789,false,false,false
+W0,L1,0.574219,0.533203,0.502686,0.489990,0.512695,0.494141,false,false,false
+W1,L1,0.753906,0.675781,0.517090,0.503662,0.511719,0.488281,true,false,false

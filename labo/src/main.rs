@@ -9,6 +9,8 @@ fn usage() -> &'static str {
      labo analyze --input DOSSIER --out NOUVEAU_DOSSIER\n\
      labo analyze-incomplete --input DOSSIER --out NOUVEAU_DOSSIER\n\
      labo culture --kind neutral|tiers --out PAQUET.bin\n\
+     labo pilote --out NOUVEAU_DOSSIER        (pilote v2 : racines 100..115 puis 116..131)\n\
+     labo pilote-smoke --out NOUVEAU_DOSSIER  (même chaîne sur 900..931, technique)\n\
      run exécute un bloc entier du plan préenregistré ; smoke est exclusivement technique.\n\
      analyze-incomplete publie les blocs appariés complets disponibles, les manquants\n\
      et des moyennes descriptives sans intervalle ni verdict confirmatoire si n < 30.\n\
@@ -333,9 +335,149 @@ fn execute() -> Result<()> {
             }
             analyze(&input, &out, command == "analyze-incomplete")?;
         }
+        "pilote" | "pilote-smoke" => {
+            let out = PathBuf::from(take(&mut options, "--out")?);
+            if !options.is_empty() {
+                return Err("options inconnues".into());
+            }
+            run_pilot(&out, command == "pilote-smoke")?;
+        }
         _ => return Err(usage().into()),
     }
     Ok(())
+}
+
+fn pilot_rows(summary: &pilote::CaseSummary) -> String {
+    let mut s = String::new();
+    for r in &summary.replicates {
+        s.push_str(&format!(
+            "{:?},{:?},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            summary.case.scale,
+            summary.case.rule,
+            r.root,
+            r.ret_aux,
+            r.y_aux_life,
+            r.y_stat,
+            r.ret_stat,
+            r.h_stat,
+            r.q_stat,
+            r.conflicts_life,
+            r.protected_life,
+            r.conflicts_probe,
+            r.protected_probe,
+            r.h_probe
+        ));
+    }
+    s
+}
+const PILOT_ROWS_HEADER: &str =
+    "W,L,root,Ret_aux,Y_aux_life,Y_stat,Ret_stat,H_stat,Q_stat,conflicts_life,protected_life,conflicts_probe,protected_probe,H_probe\n";
+const PILOT_SUMMARY_HEADER: &str =
+    "W,L,mean_Ret_aux,low95_Ret_aux,mean_Y_stat,low95_Y_stat,mean_Ret_stat,low95_Ret_stat,barre_basse,barre_haute,qualifiee\n";
+fn pilot_summary(s: &pilote::CaseSummary) -> String {
+    format!(
+        "{:?},{:?},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{},{}\n",
+        s.case.scale,
+        s.case.rule,
+        s.mean_ret_aux,
+        s.low_ret_aux,
+        s.mean_y_stat,
+        s.low_y_stat,
+        s.mean_ret_stat,
+        s.low_ret_stat,
+        s.lower_bar,
+        s.upper_bar,
+        s.qualified()
+    )
+}
+
+/// Chaîne complète §3–§6 : Étape 0, exploration des 4 cases, sélection écrite sur disque,
+/// puis validation du seul candidat. Chaque fichier est créé une fois (`write_new`).
+fn run_pilot(out: &Path, smoke: bool) -> Result<()> {
+    use pilote::*;
+    if out.exists() {
+        return Err(format!("{} existe déjà : le pilote ne s'exécute qu'une fois", out.display()));
+    }
+    let (exploration, validation) = if smoke {
+        (SMOKE_EXPLORATION_ROOTS, SMOKE_VALIDATION_ROOTS)
+    } else {
+        (EXPLORATION_ROOTS, VALIDATION_ROOTS)
+    };
+    let manifest = format!(
+        "pilote = \"{}\"\nprotocole_pilote_v2_sha256 = \"{}\"\nspec_genome_sha256 = \"{}\"\nengine_sha256 = \"{}\"\nexecutable_sha256 = \"{}\"\nrustc = \"{BUILD_RUSTC}\"\ntarget = \"{BUILD_TARGET}\"\nprofile = \"{BUILD_PROFILE}\"\nopt_level = \"{BUILD_OPT_LEVEL}\"\nexploration_roots = \"{}..{}\"\nvalidation_roots = \"{}..{}\"\nbootstraps = {PILOT_BOOTSTRAPS}\nlow_rank = {LOW_RANK}\nthreshold = {THRESHOLD}\n",
+        if smoke { "smoke (technique, hors plages réservées)" } else { "exploratoire v2" },
+        hex(&digest(include_bytes!("../PROTOCOLE_PILOTE_V2.md"))),
+        spec_fingerprint(),
+        genome_source_fingerprint(),
+        executable_fingerprint()?,
+        exploration.start,
+        exploration.end - 1,
+        validation.start,
+        validation.end - 1,
+    );
+    write_new(&out.join("manifest.started.txt"), manifest.as_bytes())?;
+    let clock = std::time::Instant::now();
+
+    // Étape 0
+    let (rows, pass) = static_witness()?;
+    let mut csv = String::from("x0,x1,v,z,cible,P_cible_moteur_qz=q.z,P_cible_protocole_qz=v.z\n");
+    for r in &rows {
+        csv.push_str(&format!(
+            "{},{},{},{},{},{:.6},{:.6}\n",
+            r.x0 as u8, r.x1 as u8, r.v as u8, r.z as u8, r.target as u8, r.p_engine, r.p_protocol
+        ));
+    }
+    write_new(&out.join("etape0.csv"), csv.as_bytes())?;
+    println!("Étape 0 : témoin statique {}", if pass { "établi (16/16 > 0,80)" } else { "ÉCHEC" });
+    if !pass {
+        write_new(&out.join("ARRET_ETAPE0"), b"temoin statique non etabli : aucune racine executee (section 3.2)\n")?;
+        return Ok(());
+    }
+
+    // Exploration
+    let indices = bootstrap_indices();
+    let mut rows_csv = String::from(PILOT_ROWS_HEADER);
+    let mut summary_csv = String::from(PILOT_SUMMARY_HEADER);
+    let mut summaries = Vec::new();
+    for case in CASES {
+        let s = run_case(exploration.clone(), case, &indices)?;
+        rows_csv.push_str(&pilot_rows(&s));
+        summary_csv.push_str(&pilot_summary(&s));
+        summaries.push(s);
+    }
+    write_new(&out.join("exploration.csv"), rows_csv.as_bytes())?;
+    write_new(&out.join("exploration-summary.csv"), summary_csv.as_bytes())?;
+    print!("Exploration {}..{} :\n{summary_csv}", exploration.start, exploration.end - 1);
+
+    // Sélection (§6.1–§6.3), consignée avant toute lecture des racines de validation.
+    let Some(candidate) = select(&summaries) else {
+        write_new(
+            &out.join("selection.txt"),
+            b"candidat = aucun\nconstat = negatif : aucune case ne franchit les deux barres (section 6.2) ; racines de validation non consultees\n",
+        )?;
+        println!("Sélection : aucune case qualifiée — arrêt avec constat négatif (§6.2).");
+        finish_pilot(out, &manifest, clock)?;
+        return Ok(());
+    };
+    write_new(&out.join("selection.txt"), format!("candidat = \"{candidate}\"\n").as_bytes())?;
+    println!("Sélection : {candidate}");
+
+    // Validation réservée (§6.4–§6.5), une seule fois, pour le seul candidat.
+    let v = run_case(validation.clone(), candidate, &indices)?;
+    let mut rows_csv = String::from(PILOT_ROWS_HEADER);
+    rows_csv.push_str(&pilot_rows(&v));
+    write_new(&out.join("validation.csv"), rows_csv.as_bytes())?;
+    let summary = format!("{PILOT_SUMMARY_HEADER}{}", pilot_summary(&v));
+    write_new(&out.join("validation-summary.csv"), summary.as_bytes())?;
+    let verdict = if v.qualified() { "valide" } else { "non_valide" };
+    write_new(&out.join("verdict.txt"), format!("candidat = \"{candidate}\"\nvalidation = \"{verdict}\"\n").as_bytes())?;
+    print!("Validation {}..{} :\n{summary}Verdict : {verdict}\n", validation.start, validation.end - 1);
+    finish_pilot(out, &manifest, clock)
+}
+
+fn finish_pilot(out: &Path, manifest: &str, clock: std::time::Instant) -> Result<()> {
+    let text = format!("{manifest}wall_seconds = {:.3}\n", clock.elapsed().as_secs_f64());
+    write_new(&out.join("manifest.txt"), text.as_bytes())
 }
 fn main() {
     if let Err(e) = execute() {
